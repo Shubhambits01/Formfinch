@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Camera App — Fixed Bottom + Confirm + LocalStore</title>
+
+<!-- JSZip CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+  :root{
+    --bg:#050507;
+    --white:#ffffff;
+    --glass: rgba(255,255,255,0.06);
+    --glass-strong: rgba(255,255,255,0.12);
+    --muted:#d0d0d0;
+    --green:#18b66b;
+    --red:#e04b52;
+    --bottom-height:112px; /* fixed bottom bar height */
+  }
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;background:var(--bg);color:var(--white);-webkit-tap-highlight-color:transparent}
+  /* Camera / Review pages */
+  .page{position:absolute;inset:0;display:none;background:transparent}
+  #cameraPage{display:block}
+
+  /* video source hidden */
+  video#videoSource{ display:none; }
+
+  /* visible canvas — reduced height so bottom bar doesn't overlap */
+  #viewCanvas{
+    position:absolute;
+    left:0;
+    top:0;
+    width:100%;
+    /* height will be set in JS to window.innerHeight - bottomHeight */
+    background:#000;
+    object-fit:cover;
+    touch-action:none;
+  }
+
+  /* overlays for framing */
+  .overlay{
+    position:absolute;border-radius:10px;border:2px dashed rgba(255,255,255,0.7);
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+    z-index:16;pointer-events:none;
+  }
+
+  /* top bar (switch / placeholder) */
+  #topBar{position:absolute;left:0;right:0;top:10px;z-index:22;padding:8px;display:flex;justify-content:space-between;pointer-events:none}
+  .glass-circle{pointer-events:auto;width:44px;height:44px;border-radius:50%;background:var(--glass);backdrop-filter:blur(12px);display:inline-flex;align-items:center;justify-content:center;box-shadow:0 6px 18px rgba(0,0,0,0.5);border:none;color:var(--white);font-size:18px}
+
+  /* fixed bottom bar (black) - does not overlap the canvas */
+/* Bottom bar styling */
+#fixedBottom {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    height: 100px;
+    background-image:url("/ai.gif");
+    background-color: grey;
+    background-position: center;
+    background-size: 100% 100% ;
+    background-repeat: no-repeat;
+    background-blend-mode: multiply;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    z-index: 10;
+}
+
+/* Blur only ai.gif if placed in bottom bar */
+#fixedBottom img[src="/ai.gif"] {
+    filter: blur(2px);
+    border-radius: 8px;
+}
+
+/* Capture button glass blur effect */
+#captureBtn {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    border: 3px dotted white;
+    backdrop-filter: blur(10px);
+    background: rgba(255, 255, 255, 0.2);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0;
+    transition: background 0.3s ease;
+}
+
+#captureBtn:active {
+    background: rgba(255, 0, 0, 0.3);
+}
+
+/* Inner capture circle */
+#captureInner {
+    width: 60%;
+    height: 60%;
+    border-radius: 50%;
+    background: white;
+}
+
+  #captureBtn.capturing #captureInner{background:var(--red)}
+
+  /* switch button position to top-right */
+  #switchBtn{margin-right:12px}
+
+  /* REVIEW PAGE */
+  #reviewPage{display:none;padding:12px;overflow:auto}
+  .review-top{display:flex;align-items:center;gap:12px;position:relative}
+  .review-title{flex:1;text-align:center;font-weight:700}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .white-box{background:var(--white);border-radius:10px;padding:6px;min-height:120px;display:flex;align-items:center;justify-content:center}
+  .white-box img{width:100%;height:auto;border-radius:6px;object-fit:cover;display:block}
+
+  .controls{display:flex;gap:12px;margin-top:12px}
+  .control-btn{flex:1;padding:12px;border-radius:10px;border:none;background:var(--white);color:#111;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,0.25);pointer-events:auto}
+  .control-btn.pressed.confirm{background:var(--green);color:#fff}
+  .control-btn.pressed.cancel{background:var(--red);color:#fff}
+
+  /* popup */
+  #popup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);min-width:80%;max-width:420px;padding:12px;border-radius:12px;background:var(--glass-strong);backdrop-filter:blur(14px);z-index:60;display:none}
+  #popup input{width:100%;padding:12px;border-radius:8px;border:none;font-size:16px;margin-bottom:10px}
+  #popup .download-btn{width:100%;padding:12px;border-radius:8px;border:none;background:var(--green);color:white;font-weight:700}
+
+  .hidden{display:none !important}
+  @media(min-width:720px){ .white-box{min-height:180px} }
+  
+
+ .watermark {
+    position: absolute; /* Positions the watermark relative to the nearest positioned ancestor (in this case, the body) */
+    top: 10px;          /* Distance from the top edge */
+    left: 10px;         /* Distance from the left edge */
+    width: 100px;       /* Set a fixed width for the logo */
+    height: auto;       /* Maintain aspect ratio */
+    opacity: 0.5;       /* Adjust for transparency */
+    z-index: 1000;      /* Ensure the watermark is on top of other content */
+  }
+
+
+
+</style>
+</head>
+<body>
+<img src="/logo.png" alt="Company Logo" class="watermark">
+
+<!-- CAMERA PAGE -->
+<div id="cameraPage" class="page">
+  <!-- hidden video source -->
+  <video id="videoSource" autoplay playsinline muted></video>
+
+  <!-- visible canvas (height adjusted in JS so bottom bar not overlapped) -->
+  <canvas id="viewCanvas"></canvas>
+
+  <!-- overlays -->
+  <div id="overlayForm" class="overlay"></div>
+  <div id="overlayProfile" class="overlay"></div>
+  <div id="overlayStudent" class="overlay"></div>
+  <div id="overlayParent" class="overlay"></div>
+
+  <!-- top bar: left placeholder, right switch button -->
+  <div id="topBar">
+    <div style="width:56px"></div>
+    <div style="display:flex;gap:8px">
+      <button id="switchBtn" class="glass-circle" title="Switch camera">⇄</button>
+    </div>
+  </div>
+</div>
+
+<!-- fixed black bottom bar -->
+<div id="fixedBottom">
+  <div class="capture-wrap">
+    <button id="captureBtn" aria-label="Capture">
+      <div id="captureInner"></div>
+    </button>
+  </div>
+</div>
+
+<!-- REVIEW PAGE -->
+<div id="reviewPage" class="page">
+  <div class="review-top" style="padding:8px 6px 0 6px">
+    <button id="backFromReview" class="glass-circle" style="pointer-events:auto">←</button>
+    <div class="review-title">Review</div>
+    <div style="width:56px"></div>
+  </div>
+
+  <div style="padding:12px">
+    <div class="grid">
+      <div class="white-box"><img id="formPreview" alt="Form"></div>
+      <div class="white-box"><img id="profilePreview" alt="Profile"></div>
+      <div class="white-box"><img id="studentPreview" alt="Student"></div>
+      <div class="white-box"><img id="parentPreview" alt="Parent"></div>
+    </div>
+
+    <div class="controls">
+      <button id="confirmBtn" class="control-btn">Confirm</button>
+      <button id="cancelBtn" class="control-btn">Cancel</button>
+    </div>
+
+    <div style="margin-top:12px;color:var(--muted);font-size:13px" id="lastDownloadInfo"></div>
+  </div>
+</div>
+
+<!-- popup for zip name -->
+<div id="popup">
+  <input id="zipName" placeholder="Enter folder name (eg. Student123)" />
+  <button id="downloadBtn" class="download-btn">Download ZIP</button>
+</div>
+
+<!-- offscreen canvas used for actual high-res crops -->
+<canvas id="captureCanvas" class="hidden"></canvas>
+
+<script>
+/* =======================
+   Elements & state
+   ======================= */
+const bottomHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--bottom-height')) || 112;
+
+const video = document.getElementById('videoSource');
+const viewCanvas = document.getElementById('viewCanvas');
+const vctx = viewCanvas.getContext('2d');
+
+const captureCanvas = document.getElementById('captureCanvas');
+const cctx = captureCanvas.getContext('2d');
+
+const overlayForm = document.getElementById('overlayForm');
+const overlayProfile = document.getElementById('overlayProfile');
+const overlayStudent = document.getElementById('overlayStudent');
+const overlayParent = document.getElementById('overlayParent');
+
+const switchBtn = document.getElementById('switchBtn');
+const captureBtn = document.getElementById('captureBtn');
+const captureInner = document.getElementById('captureInner');
+
+const cameraPage = document.getElementById('cameraPage');
+const reviewPage = document.getElementById('reviewPage');
+const backFromReview = document.getElementById('backFromReview');
+const confirmBtn = document.getElementById('confirmBtn');
+const cancelBtn = document.getElementById('cancelBtn');
+
+const formPreview = document.getElementById('formPreview');
+const profilePreview = document.getElementById('profilePreview');
+const studentPreview = document.getElementById('studentPreview');
+const parentPreview = document.getElementById('parentPreview');
+
+const popup = document.getElementById('popup');
+const zipName = document.getElementById('zipName');
+const downloadBtn = document.getElementById('downloadBtn');
+const lastDownloadInfo = document.getElementById('lastDownloadInfo');
+
+let stream = null;
+let facingMode = 'environment';
+let rafId = null;
+let viewToSourceMap = null;
+
+/* final images stored as data URLs */
+let images = { form: null, profile: null, studentSign: null, parentSign: null };
+
+/* =======================
+   Resize canvas (avoid bottom bar overlap)
+   ======================= */
+function resizeViewCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  const w = window.innerWidth;
+  const h = window.innerHeight - bottomHeight; // reserve space for bottom bar
+  viewCanvas.width = Math.round(w * ratio);
+  viewCanvas.height = Math.round(h * ratio);
+  viewCanvas.style.width = w + 'px';
+  viewCanvas.style.height = h + 'px';
+  positionOverlays(); // update overlay positions in client coords
+}
+
+/* overlays positions (fractions relative to view canvas client size) */
+function positionOverlays(){
+  const vw = viewCanvas.clientWidth;
+  const vh = viewCanvas.clientHeight;
+  setOverlay(overlayForm, 0.04, 0.04, 0.92, 0.92, vw, vh);
+  setOverlay(overlayProfile, 0.10, 0.72, 0.22, 0.14, vw, vh);
+  setOverlay(overlayStudent, 0.78, 0.08, 0.34, 0.10, vw, vh);
+  setOverlay(overlayParent, 0.78, 0.58, 0.34, 0.10, vw, vh);
+}
+function setOverlay(el, t, l, w, h, vw, vh){
+  el.style.top = Math.round(t * vh) + 'px';
+  el.style.left = Math.round(l * vw) + 'px';
+  el.style.width = Math.round(w * vw) + 'px';
+  el.style.height = Math.round(h * vh) + 'px';
+}
+
+/* =======================
+   Start camera and draw to canvas
+   ======================= */
+async function startCamera(mode='environment'){
+  facingMode = mode;
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: mode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    resizeViewCanvas();
+    drawLoop();
+  }catch(e){
+    alert('Camera error: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function drawLoop(){
+  if(video.readyState >= 2){
+    const sw = video.videoWidth;
+    const sh = video.videoHeight;
+    const dw = viewCanvas.width;
+    const dh = viewCanvas.height;
+
+    // compute source crop for 'cover' behaviour
+    let sx = 0, sy = 0, sW = sw, sH = sh;
+    const vidRatio = sw / sh;
+    const canvasRatio = dw / dh;
+    if(vidRatio > canvasRatio){
+      sW = Math.round(sh * canvasRatio);
+      sx = Math.round((sw - sW)/2);
+    } else {
+      sH = Math.round(sw / canvasRatio);
+      sy = Math.round((sh - sH)/2);
+    }
+
+    vctx.clearRect(0,0,dw,dh);
+    vctx.drawImage(video, sx, sy, sW, sH, 0, 0, dw, dh);
+
+    // store mapping for capture
+    viewToSourceMap = { sx, sy, sW, sH, dw, dh };
+  }
+  rafId = requestAnimationFrame(drawLoop);
+}
+
+/* =======================
+   Switch camera
+   ======================= */
+switchBtn.addEventListener('click', async ()=>{
+  switchBtn.disabled = true;
+  const next = (facingMode === 'environment') ? 'user' : 'environment';
+  await startCamera(next).catch(()=>{});
+  switchBtn.disabled = false;
+});
+
+/* =======================
+   Capture flow -> prepare crops -> show review page
+   ======================= */
+captureBtn.addEventListener('pointerdown', ()=> captureBtn.classList.add('capturing'));
+captureBtn.addEventListener('pointerup', ()=> captureBtn.classList.remove('capturing'));
+
+captureBtn.addEventListener('click', async ()=>{
+  if(!viewToSourceMap){ alert('Camera not ready'); return; }
+  // freeze UI for short time (UI still shows but we'll compute)
+  await captureAndPrepare();
+});
+
+async function captureAndPrepare(){
+  // pause draw loop to get deterministic frame (we will still keep stream active)
+  if(rafId) cancelAnimationFrame(rafId);
+
+  // map values
+  const { sx, sy, sW, sH, dw, dh } = viewToSourceMap;
+
+  // set captureCanvas to the source crop size (sW x sH)
+  captureCanvas.width = sW;
+  captureCanvas.height = sH;
+  cctx.clearRect(0,0,captureCanvas.width,captureCanvas.height);
+  cctx.drawImage(video, sx, sy, sW, sH, 0, 0, sW, sH);
+
+  // prepare high-res form canvas (upscale a bit to help file size)
+  const targetFormW = Math.max(1200, sW);
+  const formCanvas = document.createElement('canvas');
+  formCanvas.width = targetFormW;
+  formCanvas.height = Math.round(targetFormW * (sH / sW));
+  formCanvas.getContext('2d').drawImage(captureCanvas, 0, 0, sW, sH, 0, 0, formCanvas.width, formCanvas.height);
+
+  // helper to map client overlay rects to source pixels
+  const vw_client = viewCanvas.clientWidth;
+  const vh_client = viewCanvas.clientHeight;
+  function clientToSourceRect(top,left,width,height){
+    const x_c = Math.round(left * vw_client);
+    const y_c = Math.round(top * vh_client);
+    const w_c = Math.round(width * vw_client);
+    const h_c = Math.round(height * vh_client);
+    const x_s = Math.round(x_c / vw_client * sW);
+    const y_s = Math.round(y_c / vh_client * sH);
+    const w_s = Math.max(1, Math.round(w_c / vw_client * sW));
+    const h_s = Math.max(1, Math.round(h_c / vh_client * sH));
+    return {x: x_s, y: y_s, w: w_s, h: h_s};
+  }
+
+  const rProfile = clientToSourceRect(0.10, 0.72, 0.22, 0.14);
+  const rStudent = clientToSourceRect(0.78, 0.08, 0.34, 0.10);
+  const rParent  = clientToSourceRect(0.78, 0.58, 0.34, 0.10);
+
+  function cropToCanvas(rect, targetW){
+    const tmp = document.createElement('canvas');
+    const scale = targetW ? (targetW / rect.w) : 1;
+    tmp.width = Math.max(Math.round(rect.w * scale), 320);
+    tmp.height = Math.max(Math.round(rect.h * scale), 200);
+    tmp.getContext('2d').drawImage(captureCanvas, rect.x, rect.y, rect.w, rect.h, 0, 0, tmp.width, tmp.height);
+    return tmp;
+  }
+
+  const profileCanvas = cropToCanvas(rProfile, 600);
+  const studentCanvas = cropToCanvas(rStudent, 600);
+  const parentCanvas  = cropToCanvas(rParent, 600);
+
+  // adaptive compression helper
+  function dataUrlToBlob(dataurl){
+    const arr = dataurl.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8 = new Uint8Array(n);
+    while(n--) u8[n] = bstr.charCodeAt(n);
+    return new Blob([u8], { type: mime });
+  }
+  function canvasToDataURL(canvasEl, q=0.9){ return canvasEl.toDataURL('image/jpeg', q); }
+
+  async function ensureSize(canvasEl, minKB, maxKB, allowUpscale=true){
+    let quality = 0.9;
+    let data = canvasToDataURL(canvasEl, quality);
+    let blob = dataUrlToBlob(data);
+
+    // if too large -> reduce quality
+    while(blob.size > maxKB*1024 && quality > 0.35){
+      quality -= 0.05;
+      data = canvasToDataURL(canvasEl, quality);
+      blob = dataUrlToBlob(data);
+    }
+    // if too small -> increase quality and optionally upscale
+    while(blob.size < minKB*1024 && quality < 0.98){
+      quality += 0.03;
+      data = canvasToDataURL(canvasEl, quality);
+      blob = dataUrlToBlob(data);
+      if(blob.size < minKB*1024 && allowUpscale){
+        const MAX_DIM = 2500;
+        const scaleUp = 1.2;
+        const newW = Math.min(Math.round(canvasEl.width * scaleUp), MAX_DIM);
+        const newH = Math.min(Math.round(canvasEl.height * scaleUp), MAX_DIM);
+        if(newW === canvasEl.width) break;
+        const up = document.createElement('canvas');
+        up.width = newW; up.height = newH;
+        up.getContext('2d').drawImage(canvasEl, 0, 0, newW, newH);
+        canvasEl = up;
+        if(quality > 0.85) quality = 0.85;
+        data = canvasToDataURL(canvasEl, quality);
+        blob = dataUrlToBlob(data);
+      } else break;
+    }
+    // if still too large, gently downscale
+    while(blob.size > maxKB*1024){
+      const newW = Math.round(canvasEl.width * 0.9);
+      const newH = Math.round(canvasEl.height * 0.9);
+      if(newW < 160 || newH < 120) break;
+      const down = document.createElement('canvas');
+      down.width = newW; down.height = newH;
+      down.getContext('2d').drawImage(canvasEl, 0, 0, newW, newH);
+      canvasEl = down;
+      quality = Math.max(0.5, quality - 0.05);
+      data = canvasToDataURL(canvasEl, quality);
+      blob = dataUrlToBlob(data);
+    }
+    return { dataUrl: data, size: blob.size, canvas: canvasEl };
+  }
+
+  // compress & ensure sizes:
+  const formResult = await ensureSize(formCanvas, 250, 340, true);
+  const profileResult = await ensureSize(profileCanvas, 50, 100, true);
+  const studentResult = await ensureSize(studentCanvas, 50, 100, true);
+  const parentResult  = await ensureSize(parentCanvas, 50, 100, true);
+
+  images.form = formResult.dataUrl;
+  images.profile = profileResult.dataUrl;
+  images.studentSign = studentResult.dataUrl;
+  images.parentSign = parentResult.dataUrl;
+
+  // populate review UI
+  formPreview.src = images.form;
+  profilePreview.src = images.profile;
+  studentPreview.src = images.studentSign;
+  parentPreview.src = images.parentSign;
+
+  // show review and hide camera (camera stream remains active)
+  cameraPage.style.display = 'none';
+  reviewPage.style.display = 'block';
+
+  // resume draw loop while in background (keeps mapping ready)
+  rafId = requestAnimationFrame(drawLoop);
+}
+
+/* =======================
+   Review controls
+   ======================= */
+backFromReview.addEventListener('click', ()=>{
+  reviewPage.style.display = 'none';
+  cameraPage.style.display = 'block';
+});
+
+function pressBtnVisual(btn, cls){
+  btn.classList.add('pressed');
+  if(cls) btn.classList.add(cls);
+}
+function releaseBtnVisual(btn, cls){
+  btn.classList.remove('pressed');
+  if(cls) btn.classList.remove(cls);
+}
+
+confirmBtn.addEventListener('pointerdown', ()=> pressBtnVisual(confirmBtn,'confirm'));
+confirmBtn.addEventListener('pointerup', ()=> releaseBtnVisual(confirmBtn,'confirm'));
+confirmBtn.addEventListener('click', ()=> {
+  popup.style.display = 'block';
+  zipName.value = '';
+  zipName.focus();
+});
+
+cancelBtn.addEventListener('pointerdown', ()=> pressBtnVisual(cancelBtn,'cancel'));
+cancelBtn.addEventListener('pointerup', ()=> releaseBtnVisual(cancelBtn,'cancel'));
+cancelBtn.addEventListener('click', ()=> {
+  // retake: show camera page
+  reviewPage.style.display = 'none';
+  cameraPage.style.display = 'block';
+});
+
+/* =======================
+   Download ZIP + localStorage record
+   ======================= */
+downloadBtn.addEventListener('click', async ()=>{
+  const name = (zipName.value || 'JNV-Photos').trim();
+  if(!name){ alert('Enter a folder name'); zipName.focus(); return; }
+
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = 'Preparing...';
+
+  const zip = new JSZip();
+  const folder = zip.folder(name);
+
+  function dataUrlToBlobLocal(dataurl){
+    const arr = dataurl.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8 = new Uint8Array(n);
+    while(n--) u8[n] = bstr.charCodeAt(n);
+    return new Blob([u8], { type: mime });
+  }
+
+  folder.file('form.jpg', dataUrlToBlobLocal(images.form));
+  folder.file('profile.jpg', dataUrlToBlobLocal(images.profile));
+  folder.file('student_sign.jpg', dataUrlToBlobLocal(images.studentSign));
+  folder.file('parent_sign.jpg', dataUrlToBlobLocal(images.parentSign));
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+
+  // create object URL for immediate download (and store in localStorage for session)
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = `${name}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  // Store last download info (note: browsers do not expose real filesystem paths)
+  const record = {
+    filename: `${name}.zip`,
+    timestamp: new Date().toISOString(),
+    objectUrl: objUrl // temporary; URL will be revoked on reload
+  };
+  // Save history array
+  const hist = JSON.parse(localStorage.getItem('downloadHistory') || '[]');
+  hist.unshift(record);
+  localStorage.setItem('downloadHistory', JSON.stringify(hist.slice(0,10)));
+
+  // Also save lastDownload for instant UI
+  localStorage.setItem('lastDownload', JSON.stringify(record));
+  updateLastDownloadUI();
+
+  downloadBtn.disabled = false;
+  downloadBtn.textContent = 'Download ZIP';
+  popup.style.display = 'none';
+
+  // return to camera
+  reviewPage.style.display = 'none';
+  cameraPage.style.display = 'block';
+});
+
+/* show last download info on review page */
+function updateLastDownloadUI(){
+  const last = JSON.parse(localStorage.getItem('lastDownload') || 'null');
+  if(last){
+    const t = new Date(last.timestamp);
+    lastDownloadInfo.textContent = `Last downloaded: ${last.filename} — ${t.toLocaleString()}`;
+  } else {
+    lastDownloadInfo.textContent = '';
+  }
+}
+
+/* =======================
+   Utilities and init
+   ======================= */
+window.addEventListener('resize', ()=> {
+  resizeViewCanvas();
+});
+window.addEventListener('orientationchange', ()=> {
+  setTimeout(()=> resizeViewCanvas(), 200);
+});
+
+// initialize
+resizeViewCanvas();
+updateLastDownloadUI();
+startCamera('environment');
+
+</script>
+</body>
+</html>
